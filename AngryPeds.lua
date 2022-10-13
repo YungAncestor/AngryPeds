@@ -1,5 +1,5 @@
 -- AngryPeds
--- ver 0.1
+-- ver 0.2
 -- by YungAncestor.  https://github.com/YungAncestor/AngryPeds
 
 -- the max distance between a ped to be chosen and the target
@@ -12,8 +12,11 @@ PED_WEAPONS = {0x22D8FE39, 0x7F7497E5, 0x476BF155, 0xB62D1F67}
 -- 0: Near   1: Medium   2: Far
 PED_ATTACK_RANGE = 2
 
+-- require_natives(NATIVE_VERSION)
+NATIVE_VERSION = 1663599433 -- GTA5 2699.0
+
 --
---
+-- Define functions
 --
 
 function get_dist(coord1, coord2, ignorez)
@@ -39,15 +42,22 @@ end
 function get_closest_ped_from_entity(target, range)
 	local selfpedid = PLAYER.PLAYER_PED_ID()
 	local player_coords = get_entity_coords(target)
-	local allpeds = entities.get_peds()
+	local allpeds = {}
 	local ped_coords = nil
 	local closest_dist = 114514
 	local this_dist = 0
 	local closest_pedid = 0
+	if ENV == 2 then
+		allpeds = entities.get_peds()
+	elseif ENV == 1 then
+		allpeds = entities.get_all_peds_as_handles()
+	else
+		return 0
+	end
 	if not range then range=114514 end
 	for k,v in ipairs(allpeds) do
 		ped_coords = get_entity_coords(v)
-		this_dist = get_dist(player_coords, ped_coords, true)
+		this_dist = get_dist(player_coords, ped_coords, false)
 		-- check if ped is:
 		-- not target
 		-- not dead
@@ -55,54 +65,62 @@ function get_closest_ped_from_entity(target, range)
 		-- not self
 		-- in range
 		-- then, compare the distance with recorded minimum
-		if this_dist > 0 and not (v == target)  and (PED.IS_PED_DEAD_OR_DYING(v, true)==0) and (PED.IS_PED_A_PLAYER(v)==0) and not (v == selfpedid) and this_dist < closest_dist and this_dist < range then
+		if this_dist > 0 and not (v == target)  and (PED.IS_PED_DEAD_OR_DYING(v, true)==NATIVE_NEGATIVE) and (PED.IS_PED_A_PLAYER(v)==NATIVE_NEGATIVE) and not (v == selfpedid) and this_dist < closest_dist and this_dist < range then
 			closest_dist = this_dist
 			closest_pedid = v
 		end
 	end
-	if not (closest_pedid == 0) then log("get_closest_ped_from_entity: PedID:"..closest_pedid..", Distance:"..closest_dist.." from target "..target) end
+	-- if not (closest_pedid == 0) then log("get_closest_ped_from_entity: PedID:"..closest_pedid..", Distance:"..closest_dist.." from target "..target) end
 	return closest_pedid
 end
 
-function get_random_ped_from_entity(target, range)
-	local selfpedid = PLAYER.PLAYER_PED_ID()
-	local coords = get_entity_coords(target)
-	local newpedid = 0
-	if newpedid == 0 or newpedid == selfpedid or newpedid == targetid then
-		newpedid = PED.GET_RANDOM_PED_AT_COORD(coords.x, coords.y, coords.z, range, range, range, 26)
-		if newpedid == 0 or newpedid == selfpedid then
-			log("get_random_ped_from_entity: GET_RANDOM_PED_AT_COORD didn't return a ped.")	
-			newpedid = 0
+function request_control(entity, callback)
+	if ENV==2 then
+		entities.request_control(entity, callback)
+		return true
+	elseif ENV==1 then
+		local i=0
+		while (NETWORK.NETWORK_HAS_CONTROL_OF_ENTITY(entity) == NATIVE_NEGATIVE) do
+			if i>100 then
+				notify("Request control over entity failed: "..entity)
+				return false
+			end
+			i=i+1
+			NETWORK.NETWORK_REQUEST_CONTROL_OF_ENTITY(entity)
+			yield()
 		end
+		callback(entity)
+		return true
 	end
-	if not (newpedid==0) then log("get_random_ped_from_entity: "..newpedid) end
-	return newpedid
+	return false
 end
 
 function make_ped_attack(npc, playerpedid, weaponhash, range)
-	entities.request_control(npc, function(handle)
+	return request_control(npc, function(handle)
 		-- terminate the ped's action if not in a vehicle or fleeing
 		local ped_veh = PED.GET_VEHICLE_PED_IS_IN(handle, false)
-		if (ped_veh == 0) or (PED.IS_PED_FLEEING(handle) == 1) then
+		if (ped_veh == 0) or (PED.IS_PED_FLEEING(handle) == NATIVE_POSITIVE) then
+			TASK.CLEAR_PED_TASKS(handle)
+			TASK.CLEAR_PED_SECONDARY_TASK(handle)
 			TASK.CLEAR_PED_TASKS_IMMEDIATELY(handle)
 		else
 			if not (ped_veh == 0) then
-				ENTITY.SET_ENTITY_INVINCIBLE(ped_veh, true)
+			ENTITY.SET_ENTITY_INVINCIBLE(ped_veh, true)
 			end
 		end
 		-- give weapons to ped
 		if type(weaponhash) == "table" then
 			for k,v in ipairs(weaponhash) do
-				WEAPON.GIVE_WEAPON_TO_PED(handle, v, 9999, true, false)
+			WEAPON.GIVE_WEAPON_TO_PED(handle, v, 9999, true, false)
 			end
 		else
 			WEAPON.GIVE_WEAPON_TO_PED(handle, weaponhash, 9999, true, false)
 		end
 		-- give ped godmode
-		ENTITY.SET_ENTITY_INVINCIBLE(handle, true)
 		PED.SET_PED_CAN_RAGDOLL(handle, false)
 		PED.SET_PED_CAN_RAGDOLL_FROM_PLAYER_IMPACT(handle, false)
 		PED.SET_PED_SUFFERS_CRITICAL_HITS(handle, false)
+		ENTITY.SET_ENTITY_INVINCIBLE(handle, true)
 		-- set ped to be very agressive
 		PED.SET_PED_CAN_SWITCH_WEAPON(handle, true)
 		PED.SET_PED_ACCURACY(handle, 100.0)
@@ -125,62 +143,127 @@ function make_ped_attack(npc, playerpedid, weaponhash, range)
 end
 
 function log(text)
-	system.log("AngryPeds", tostring(text))
+	local str_text = tostring(text)
+	if ENV==2 then
+		system.log("AngryPeds", str_text)
+	elseif ENV==1 then
+		util.log("[AngryPeds] " .. str_text)
+	end
 end
 
 function notify(text)
 	local str_text = tostring(text)
-	system.notify("AngryPeds", str_text, 0, 255, 0, 255)
-	system.log("AngryPeds", str_text)
+	if ENV==2 then
+		system.notify("AngryPeds", str_text, 0, 255, 0, 255)
+		system.log("AngryPeds", str_text)
+	elseif ENV==1 then
+		util.toast("[AngryPeds] " .. str_text, TOAST_DEFAULT)
+		util.log("[AngryPeds] " .. str_text)
+	end
+end
+
+function yield(wake_in_ms)
+	if ENV==2 then
+		system.yield(wake_in_ms)
+	elseif ENV==1 then
+		util.yield(wake_in_ms)
+	end
 end
 
 --
---
+-- Main function
 --
 
 function go_angry(target)
 	-- do nothing if player offline to avoid self crashing
-	if NETWORK.NETWORK_IS_PLAYER_CONNECTED(target) == 0 then return end
+	if NETWORK.NETWORK_IS_PLAYER_CONNECTED(target) == NATIVE_NEGATIVE then return end
 	-- get target's PedID
 	local selectedPlayer = PLAYER.GET_PLAYER_PED_SCRIPT_INDEX(target)
-	if PED.IS_PED_DEAD_OR_DYING(selectedPlayer, true)==0 then
+	if PED.IS_PED_DEAD_OR_DYING(selectedPlayer, true)==NATIVE_NEGATIVE then
 		--get a nearby pad
 		local npc = get_closest_ped_from_entity(selectedPlayer, PED_SELECT_RANGE)
 		if npc==0 then
 			notify("Can't find a ped for player "..target)
 		else
-			if PED.IS_PED_IN_COMBAT(npc, selectedPlayer)==0 then
-				make_ped_attack(npc, selectedPlayer, PED_WEAPONS, PED_ATTACK_RANGE)
-				notify("You made ped "..npc.." attack player "..target)
+			if PED.IS_PED_IN_COMBAT(npc, selectedPlayer)==NATIVE_NEGATIVE then
+				if make_ped_attack(npc, selectedPlayer, PED_WEAPONS, PED_ATTACK_RANGE) then
+					notify("You made ped "..npc.." attack player "..target)
+				end
 			end
 		end
 	end
 end
 
+
 --
---
+-- Check environment
 --
 
-angrymenu = ui.add_player_submenu("AngryPeds")
+ENV = 0
+NATIVE_POSITIVE = 1
+NATIVE_NEGATIVE = 0
+if type(menu) == "table" and type(menu.get_activation_key_hash) == "function" then
+	-- STAND
+	ENV = 1
+	NATIVE_POSITIVE = true
+	NATIVE_NEGATIVE = false
+elseif type(online) == "table" and type(system) == "table" then
+	-- NIGHTFALL
+	ENV = 2
+end
 
-ui.add_click_option("Angry NPC", angrymenu, function()
-	local target = online.get_selected_player()
-	go_angry(target)
-end)
 
-angryloop = ui.add_bool_option("Angry NPC Loop", angrymenu, function()
-	while ui.get_value(angryloop)==true do
+--
+-- Register menu items
+--
+
+st_register_menu_items_for_player = function(pid)
+	if not (ENV == 1) then return end
+	local playerroot = menu.player_root(pid)
+	local angrymenu = menu.list(playerroot, "AngryPeds", {}, "Make NPCs Angry!")
+	local angryaction = menu.action(angrymenu, "Angry NPC", {}, "Make a nearby NPC aggressive and attack the selected player", function()
+		if players.exists(pid) then go_angry(pid) end
+	end)
+	local angryloop = menu.toggle_loop(angrymenu, "Angry NPC Loop", {}, "NPC attack loop", function()
+		if players.exists(pid) then go_angry(pid) end
+	end)
+end
+
+
+if (ENV == 2) then
+	angrymenu = ui.add_player_submenu("AngryPeds")
+
+	ui.add_click_option("Angry NPC", angrymenu, function()
 		local target = online.get_selected_player()
-		if NETWORK.NETWORK_IS_PLAYER_CONNECTED(target) == 0 then break end
 		go_angry(target)
-		system.yield(1000)
+	end)
+
+	angryloop = ui.add_bool_option("Angry NPC Loop", angrymenu, function()
+		while ui.get_value(angryloop)==true do
+			local target = online.get_selected_player()
+			if NETWORK.NETWORK_IS_PLAYER_CONNECTED(target) == 0 then break end
+			go_angry(target)
+			yield(500)
+		end
+	end)
+elseif (ENV == 1) then
+	for pid = 0,30 do
+		if players.exists(pid) then 
+			st_register_menu_items_for_player(pid)
+		end
 	end
-end)
+	players.on_join(st_register_menu_items_for_player)
+end
 
----
----
----
+--
+-- Loop
+--
 
-while true do
-	system.yield()
+if ENV == 1 then
+	util.require_natives(NATIVE_VERSION)
+	util.keep_running()
+elseif ENV==2 then
+	while true do
+		system.yield()
+	end
 end
